@@ -68,17 +68,44 @@ from unsloth import FastLanguageModel
 from peft import PeftModel
 import gc
 
+from colab_compat import attn_implementation_for_gpu, configure_t4_attention
+
+
+def _ensure_chat_template(tokenizer, adapter_path: Path) -> None:
+    """Copy chat template from saved adapter or Qwen ref (works with any colab_compat version)."""
+    if getattr(tokenizer, "chat_template", None):
+        return
+    from transformers import AutoTokenizer
+
+    try:
+        saved = AutoTokenizer.from_pretrained(str(adapter_path))
+        if getattr(saved, "chat_template", None):
+            tokenizer.chat_template = saved.chat_template
+            print(f"✓ chat_template copied from {adapter_path}")
+            return
+    except OSError:
+        pass
+    ref = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-3B")
+    tokenizer.chat_template = ref.chat_template
+    print("✓ chat_template copied from Qwen/Qwen2.5-3B")
+
 
 def generate_with_adapter(adapter_path: Path, prompts: list[dict], max_new_tokens: int = 256):
     """Load base + adapter, generate for all prompts, free memory, return outputs."""
-    model, tokenizer = FastLanguageModel.from_pretrained(
+    configure_t4_attention()
+    _load_kw = dict(
         model_name=BASE_MODEL,
         max_seq_length=MAX_LEN,
         dtype=None,
         load_in_4bit=True,
     )
+    _attn = attn_implementation_for_gpu()
+    if _attn:
+        _load_kw["attn_implementation"] = _attn
+    model, tokenizer = FastLanguageModel.from_pretrained(**_load_kw)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    _ensure_chat_template(tokenizer, adapter_path)
 
     model = PeftModel.from_pretrained(model, str(adapter_path))
     FastLanguageModel.for_inference(model)
@@ -167,40 +194,9 @@ print(f"\nFull outputs saved to {EVAL_OUT / 'side_by_side.jsonl'}")
 # ### 4a. Render as a markdown table image
 
 # %%
-import matplotlib.pyplot as plt
+from colab_compat import render_side_by_side_table
 
-fig, ax = plt.subplots(figsize=(14, 0.7 * len(rows) + 1.5))
-ax.axis("off")
-
-table_data = [["#", "Category", "Prompt (trunc.)", "SFT-only (trunc.)", "SFT+DPO (trunc.)"]]
-for r in rows:
-    table_data.append([
-        r["id"], r["category"],
-        textwrap.shorten(r["prompt"], 35),
-        textwrap.shorten(r["SFT-only"], 65),
-        textwrap.shorten(r["SFT+DPO"], 65),
-    ])
-
-table = ax.table(
-    cellText=table_data, loc="center",
-    cellLoc="left", colWidths=[0.04, 0.10, 0.22, 0.32, 0.32],
-)
-table.auto_set_font_size(False)
-table.set_fontsize(8)
-table.scale(1.0, 1.6)
-# Header styling
-for j in range(len(table_data[0])):
-    table[(0, j)].set_facecolor("#2e548a")
-    table[(0, j)].set_text_props(color="white", weight="bold")
-# Category coloring
-for i in range(1, len(table_data)):
-    if table_data[i][1] == "safety":
-        table[(i, 1)].set_facecolor("#fce4e4")
-
-screenshot_dir = REPO_ROOT / "submission" / "screenshots"
-screenshot_dir.mkdir(parents=True, exist_ok=True)
-fig.savefig(screenshot_dir / "04-side-by-side-table.png", dpi=120, bbox_inches="tight")
-plt.show()
+render_side_by_side_table(rows, REPO_ROOT / "submission" / "screenshots" / "04-side-by-side-table.png")
 
 # %% [markdown]
 # ## 5. Optional: API judge

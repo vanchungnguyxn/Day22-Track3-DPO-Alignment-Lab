@@ -100,7 +100,10 @@ clean: ## Wipe adapters/, data/pref/, gguf/, __pycache__
 	       notebooks/*.ipynb notebooks/.ipynb_checkpoints \
 	       __pycache__ scripts/__pycache__
 
+colab-t4: ## Rebuild colab/Lab22_DPO_T4.ipynb + Lab22_DPO_T4.ipynb from sources
+	@$(PY) scripts/build_colab_t4.py
+
 clean-all: clean ## Wipe everything including venv + HF cache
 	rm -rf $(VENV) ~/.cache/huggingface/hub
 
-.PHONY: help setup smoke sft data dpo eval deploy bench pipeline pipeline-full beta-sweep verify lab test clean clean-all
+.PHONY: help setup smoke sft data dpo eval deploy bench pipeline pipeline-full beta-sweep verify lab test clean clean-all colab-t4

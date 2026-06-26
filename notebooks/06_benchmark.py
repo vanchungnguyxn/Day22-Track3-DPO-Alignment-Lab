@@ -187,7 +187,26 @@ def generate_with_adapter(adapter_path, prompts, max_new_tokens=256):
     """NB4 pattern: load base + adapter, generate, free memory."""
     from unsloth import FastLanguageModel
     from peft import PeftModel
+    from colab_compat import configure_t4_attention
 
+    def _ensure_chat_template(tokenizer, adapter_path):
+        if getattr(tokenizer, "chat_template", None):
+            return
+        from transformers import AutoTokenizer
+        from pathlib import Path as _Path
+
+        ap = _Path(adapter_path)
+        try:
+            saved = AutoTokenizer.from_pretrained(str(ap))
+            if getattr(saved, "chat_template", None):
+                tokenizer.chat_template = saved.chat_template
+                return
+        except OSError:
+            pass
+        ref = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-3B")
+        tokenizer.chat_template = ref.chat_template
+
+    configure_t4_attention()
     base = "unsloth/Qwen2.5-3B-bnb-4bit" if COMPUTE_TIER == "T4" else "unsloth/Qwen2.5-7B-bnb-4bit"
     max_len = 512 if COMPUTE_TIER == "T4" else 1024
 
@@ -196,6 +215,7 @@ def generate_with_adapter(adapter_path, prompts, max_new_tokens=256):
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    _ensure_chat_template(tokenizer, adapter_path)
     model = PeftModel.from_pretrained(model, str(adapter_path))
     FastLanguageModel.for_inference(model)
 
@@ -344,6 +364,9 @@ for bench, scores in metrics.items():
 # %%
 import matplotlib.pyplot as plt
 import numpy as np
+from colab_compat import setup_matplotlib_vn
+
+setup_matplotlib_vn()
 
 bench_names = list(metrics.keys())
 sft_scores = [metrics[b]["sft"] for b in bench_names]

@@ -41,7 +41,10 @@ else:  # BIGGPU
     PER_DEVICE_BATCH = 2
     GRAD_ACCUM = 4
 
-SFT_DATASET = os.environ.get("SFT_DATASET", "5CD-AI/Vietnamese-alpaca-cleaned")
+# Original hub id removed; tsdocode/vi_alpaca_clean is Alpaca-compatible (instruction/input/output).
+from colab_compat import DEFAULT_SFT_DATASET
+
+SFT_DATASET = os.environ.get("SFT_DATASET", DEFAULT_SFT_DATASET)
 SFT_SLICE = 1000
 NUM_EPOCHS = 1
 
@@ -71,14 +74,29 @@ print(f"GPU: {gpu.name}  ({gpu.total_memory / 1e9:.1f} GB)")
 # 4-bit quantized base; `get_peft_model` attaches the LoRA adapter on top.
 
 # %%
+from colab_compat import (
+    configure_t4_attention,
+    disable_torchcodec,
+    attn_implementation_for_gpu,
+    apply_attn_config,
+)
 from unsloth import FastLanguageModel
 
-model, tokenizer = FastLanguageModel.from_pretrained(
+disable_torchcodec()
+configure_t4_attention()
+
+_load_kw = dict(
     model_name=BASE_MODEL,
     max_seq_length=MAX_LEN,
-    dtype=None,                # auto: bf16 on Ampere+, fp16 on Turing
+    dtype=None,
     load_in_4bit=True,
 )
+_attn = attn_implementation_for_gpu()
+if _attn:
+    _load_kw["attn_implementation"] = _attn
+
+model, tokenizer = FastLanguageModel.from_pretrained(**_load_kw)
+apply_attn_config(model)
 
 # Critical for batch training — Qwen tokenizers ship without pad token.
 if tokenizer.pad_token is None:
@@ -106,8 +124,7 @@ print(f"Trainable params: {sum(p.numel() for p in model.parameters() if p.requir
 # %% [markdown]
 # ## 2. Load + format VN Alpaca slice
 #
-# `5CD-AI/Vietnamese-alpaca-cleaned` is a 50k-row VN Alpaca translation. Lab 21
-# uses 1k slice for the demo run; we match that exactly so reward gap is comparable.
+# VN Alpaca slice (default: tsdocode/vi_alpaca_clean). Lab 21 uses 1k rows / 1 epoch.
 
 # %%
 from datasets import load_dataset
@@ -117,21 +134,15 @@ print(f"Loaded {len(ds)} rows. Columns: {ds.column_names}")
 print(f"\nFirst row:\n{ds[0]}")
 
 # %%
-# Alpaca → ChatML format (Qwen2.5's native template)
-def format_alpaca_to_chat(row):
-    messages = []
-    if row.get("instruction"):
-        prompt = row["instruction"]
-        if row.get("input"):
-            prompt += "\n\n" + row["input"]
-        messages.append({"role": "user", "content": prompt})
-    if row.get("output"):
-        messages.append({"role": "assistant", "content": row["output"]})
-    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-    return {"text": text}
+# Alpaca → ChatML (Qwen2.5). ensure_chat_template handles Colab Unsloth tokenizers.
+from colab_compat import ensure_chat_template, format_alpaca_to_chat
 
+ensure_chat_template(tokenizer)
 
-ds_formatted = ds.map(format_alpaca_to_chat, remove_columns=ds.column_names)
+ds_formatted = ds.map(
+    lambda row: format_alpaca_to_chat(row, tokenizer),
+    remove_columns=ds.column_names,
+)
 print(f"\nSample formatted text (first 500 chars):\n{ds_formatted[0]['text'][:500]}")
 
 # %% [markdown]
@@ -175,6 +186,9 @@ print(f"\nFinal train loss: {train_result.training_loss:.4f}")
 
 # %%
 import matplotlib.pyplot as plt
+from colab_compat import setup_matplotlib_vn
+
+setup_matplotlib_vn()
 
 losses = [log["loss"] for log in trainer.state.log_history if "loss" in log]
 steps = [log["step"] for log in trainer.state.log_history if "loss" in log]

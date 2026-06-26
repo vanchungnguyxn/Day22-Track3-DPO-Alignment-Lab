@@ -76,16 +76,31 @@ assert torch.cuda.is_available(), "DPO needs a CUDA GPU. See HARDWARE-GUIDE.md."
 # sequences, not from a second copy of the weights.
 
 # %%
+from colab_compat import (
+    configure_t4_attention,
+    disable_torchcodec,
+    attn_implementation_for_gpu,
+    apply_attn_config,
+)
 from unsloth import FastLanguageModel
 from peft import PeftModel
 
-# Policy — gets new DPO LoRA adapter on top of SFT LoRA
-model, tokenizer = FastLanguageModel.from_pretrained(
+disable_torchcodec()
+configure_t4_attention()
+
+_load_kw = dict(
     model_name=BASE_MODEL,
     max_seq_length=MAX_LEN,
     dtype=None,
     load_in_4bit=True,
 )
+_attn = attn_implementation_for_gpu()
+if _attn:
+    _load_kw["attn_implementation"] = _attn
+
+# Policy — gets new DPO LoRA adapter on top of SFT LoRA
+model, tokenizer = FastLanguageModel.from_pretrained(**_load_kw)
+apply_attn_config(model)
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
@@ -111,6 +126,7 @@ model = FastLanguageModel.get_peft_model(
     use_rslora=False,
     loftq_config=None,
 )
+apply_attn_config(model)
 print(f"Trainable params (DPO LoRA): {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
 
 # %% [markdown]
@@ -173,6 +189,10 @@ trainer = DPOTrainer(
 )
 
 # %%
+# T4 guard: DPO backward hits xformers FA unless we force SDPA (needs sm_80+)
+configure_t4_attention()
+apply_attn_config(trainer.model)
+
 train_result = trainer.train()
 print(f"\nFinal DPO loss: {train_result.training_loss:.4f}")
 
@@ -191,6 +211,9 @@ print(f"\nFinal DPO loss: {train_result.training_loss:.4f}")
 # %%
 import matplotlib.pyplot as plt
 import pandas as pd
+from colab_compat import setup_matplotlib_vn
+
+setup_matplotlib_vn()
 
 logs = pd.DataFrame(trainer.state.log_history)
 logs = logs[logs["loss"].notna() if "loss" in logs.columns else logs.index].copy()
